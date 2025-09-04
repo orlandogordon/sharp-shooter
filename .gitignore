@@ -1,0 +1,111 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+.env/
+
+# Environment variables and secrets
+.env
+.env.local
+.env.*.local
+config.py
+secrets.py
+credentials.json
+*.key
+
+# API Keys and sensitive data
+api_keys.txt
+*_api_key*
+odds_api_key*
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+database.ini
+db_config.py
+
+# Google Sheets credentials
+client_secret*.json
+token.json
+service_account*.json
+
+# Data files
+*.csv
+*.xlsx
+*.xls
+data/
+raw_data/
+exports/
+backups/
+
+# Logs
+*.log
+logs/
+log_files/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+*.ipynb
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# NFL/Sports specific
+weekly_sheets/
+historical_data/
+model_outputs/
+betting_records/
+performance_reports/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Documentation
+docs/_build/
