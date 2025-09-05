@@ -60,6 +60,7 @@ service_account*.json
 *.xls
 data/
 raw_data/
+collected_data/
 exports/
 backups/
 
@@ -109,3 +110,8 @@ htmlcov/
 
 # Documentation
 docs/_build/
+
+# Creds
+google_service_account_key.json
+google_oauth_key.json
+token.pickle
