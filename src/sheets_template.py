@@ -7,30 +7,31 @@ Creates the master template with proper tab structure and schemas
 import os
 import sys
 from datetime import datetime
-from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 # Add src to path for imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from config import Config
+from oauth_auth import GoogleOAuthClient
 
 class SheetsTemplateCreator:
     """Creates Google Sheets templates for NFL betting data tracking"""
     
     def __init__(self):
-        """Initialize with Google Sheets API credentials"""
+        """Initialize with OAuth authentication"""
         Config.validate_config()
         
-        # Set up credentials
-        credentials = Credentials.from_service_account_file(
-            Config.GOOGLE_CREDENTIALS_FILE,
-            scopes=Config.GOOGLE_SCOPES
-        )
+        # Set up OAuth authentication
+        scopes = [
+            'https://www.googleapis.com/auth/spreadsheets',
+            'https://www.googleapis.com/auth/drive'
+        ]
         
-        # Build services
-        self.sheets_service = build('sheets', 'v4', credentials=credentials)
-        self.drive_service = build('drive', 'v3', credentials=credentials)
+        oauth_client = GoogleOAuthClient(scopes)
+        self.sheets_service = oauth_client.get_sheets_service()
+        self.drive_service = oauth_client.get_drive_service()
+        
+        print("🔐 Initialized with OAuth authentication")
         
     def create_master_template(self):
         """Create the master template spreadsheet"""
@@ -63,6 +64,10 @@ class SheetsTemplateCreator:
             self._setup_player_props_tab(spreadsheet_id)
             self._setup_my_picks_tab(spreadsheet_id)
             self._setup_results_tab(spreadsheet_id)
+            self._setup_futures_tab(spreadsheet_id)
+            
+            # Apply formatting to all tabs
+            self._apply_all_formatting(spreadsheet_id)
             
             print(f"✅ Master template created successfully!")
             print(f"📄 Spreadsheet ID: {spreadsheet_id}")
@@ -77,16 +82,12 @@ class SheetsTemplateCreator:
     def _move_to_folder(self, spreadsheet_id):
         """Move spreadsheet to the specified Drive folder"""
         try:
-            # Find the folder by name
-            folder_query = f"name='{Config.GOOGLE_DRIVE_FOLDER_ID}' and mimeType='application/vnd.google-apps.folder'"
-            folder_results = self.drive_service.files().list(q=folder_query).execute()
-            folders = folder_results.get('files', [])
+            # Use the folder ID directly (not search by name)
+            folder_id = Config.GOOGLE_DRIVE_FOLDER_ID
             
-            if not folders:
-                print(f"⚠️  Warning: Folder '{Config.GOOGLE_DRIVE_FOLDER_ID}' not found")
-                return
-                
-            folder_id = folders[0]['id']
+            # Verify folder exists by getting its metadata
+            folder = self.drive_service.files().get(fileId=folder_id).execute()
+            folder_name = folder.get('name', 'Unknown')
             
             # Move file to folder
             file = self.drive_service.files().get(fileId=spreadsheet_id, fields='parents').execute()
@@ -99,24 +100,17 @@ class SheetsTemplateCreator:
                 fields='id, parents'
             ).execute()
             
-            print(f"📁 Moved template to folder: {Config.GOOGLE_DRIVE_FOLDER_ID}")
+            print(f"📁 Moved template to folder: {folder_name} ({folder_id})")
             
         except HttpError as error:
             print(f"⚠️  Warning: Could not move to folder: {error}")
     
     def _create_all_tabs(self, spreadsheet_id):
         """Create all required tabs"""
+        # First, create all our tabs
         requests = []
+        sheet_id = 1  # Start from 1 since Sheet1 (ID=0) already exists
         
-        # Delete default Sheet1 and create our tabs
-        requests.append({
-            'deleteSheet': {
-                'sheetId': 0  # Default sheet ID
-            }
-        })
-        
-        # Create all tabs
-        sheet_id = 0
         for tab_key, tab_name in Config.TAB_NAMES.items():
             requests.append({
                 'addSheet': {
@@ -125,21 +119,41 @@ class SheetsTemplateCreator:
                         'title': tab_name,
                         'gridProperties': {
                             'rowCount': 1000,
-                            'columnCount': 26
+                            'columnCount': 52  # More columns for snapshot data
                         }
                     }
                 }
             })
             sheet_id += 1
         
-        # Execute batch update
-        body = {'requests': requests}
-        self.sheets_service.spreadsheets().batchUpdate(
-            spreadsheetId=spreadsheet_id,
-            body=body
-        ).execute()
+        # Execute batch update to create new tabs
+        if requests:
+            body = {'requests': requests}
+            self.sheets_service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body=body
+            ).execute()
+            
+            print(f"📋 Created {len(Config.TAB_NAMES)} new tabs")
         
-        print(f"📋 Created {len(Config.TAB_NAMES)} tabs")
+        # Now delete the default Sheet1 (now that we have other tabs)
+        delete_request = {
+            'requests': [{
+                'deleteSheet': {
+                    'sheetId': 0  # Default Sheet1 ID
+                }
+            }]
+        }
+        
+        try:
+            self.sheets_service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body=delete_request
+            ).execute()
+            print(f"🗑️  Removed default Sheet1")
+            
+        except HttpError as e:
+            print(f"⚠️  Warning: Could not remove default sheet: {e}")
     
     def _setup_overview_tab(self, spreadsheet_id):
         """Set up the Overview dashboard tab"""
@@ -171,8 +185,7 @@ class SheetsTemplateCreator:
         
         self._write_to_sheet(spreadsheet_id, tab_name, 'A1', values)
         
-        # Format the overview tab
-        self._format_overview_tab(spreadsheet_id, 0)
+        # Note: Overview formatting is now handled by _apply_all_formatting()
         
     def _setup_game_lines_tab(self, spreadsheet_id):
         """Set up the Game Lines tab with 4-snapshot schema"""
@@ -296,6 +309,50 @@ class SheetsTemplateCreator:
         values = [headers, sample_data]
         self._write_to_sheet(spreadsheet_id, tab_name, 'A1', values)
         
+    def _setup_futures_tab(self, spreadsheet_id):
+        """Set up the Season Futures tab for manual entry of season-long bets"""
+        tab_name = Config.TAB_NAMES['futures']
+        
+        headers = [
+            'Bet_ID', 'Date_Placed', 'Market_Type', 'Selection', 'Odds_Placed', 'Current_Odds',
+            'Stake', 'Potential_Payout', 'Confidence', 'Tags', 'Comments', 'Reasoning',
+            'Status', 'Result', 'Profit_Loss', 'Date_Resolved', 'Last_Updated'
+        ]
+        
+        # Sample futures bets for reference
+        sample_data = [
+            [
+                'FUTURES_001', '2024-08-15', 'Super Bowl Winner', 'Kansas City Chiefs', '+1000', '+900',
+                '100', '1000', '8', 'championship,value_bet', 'Strong value at +1000 preseason',
+                'Dynasty team with Mahomes', 'Open', '', '', '', '2024-08-15'
+            ],
+            [
+                'FUTURES_002', '2024-08-20', 'NFL MVP', 'Josh Allen', '+700', '+650', 
+                '50', '350', '7', 'mvp,bills', 'Bills should have strong season',
+                'Top QB on playoff team', 'Open', '', '', '', '2024-08-20'
+            ],
+            [
+                'FUTURES_003', '2024-08-25', 'Team Win Total', 'Detroit Lions Over 10.5', '-110', '-120',
+                '75', '68.18', '6', 'win_total,nfc', 'Lions improved significantly',
+                'Strong offense and coaching', 'Open', '', '', '', '2024-08-25'
+            ],
+            [
+                'FUTURES_004', '2024-09-01', 'DPOY', 'Micah Parsons', '+450', '+400',
+                '25', '112.50', '5', 'dpoy,cowboys', 'Elite pass rusher',
+                'Should get plenty of sacks', 'Open', '', '', '', '2024-09-01'
+            ],
+            [
+                'FUTURES_005', '2024-08-10', 'OPOY', 'Christian McCaffrey', '+800', '+750',
+                '40', '320', '7', 'opoy,49ers', 'Best offensive weapon in league',
+                'Healthy CMC is unstoppable', 'Open', '', '', '', '2024-08-10'
+            ]
+        ]
+        
+        values = [headers] + sample_data
+        self._write_to_sheet(spreadsheet_id, tab_name, 'A1', values)
+        
+        print(f"📊 Created Season Futures tab with sample futures bets")
+        
     def _format_overview_tab(self, spreadsheet_id, sheet_id):
         """Format the overview tab for better presentation"""
         requests = [
@@ -350,6 +407,291 @@ class SheetsTemplateCreator:
             spreadsheetId=spreadsheet_id,
             body=body
         ).execute()
+    
+    def _apply_all_formatting(self, spreadsheet_id):
+        """Apply comprehensive formatting to all tabs"""
+        print(f"🎨 Applying formatting and filters to all tabs...")
+        
+        # Get sheet metadata to find sheet IDs
+        spreadsheet_metadata = self.sheets_service.spreadsheets().get(
+            spreadsheetId=spreadsheet_id
+        ).execute()
+        
+        # Create sheet ID mapping
+        sheet_id_map = {}
+        for sheet in spreadsheet_metadata['sheets']:
+            title = sheet['properties']['title']
+            sheet_id = sheet['properties']['sheetId']
+            sheet_id_map[title] = sheet_id
+        
+        requests = []
+        
+        # Apply formatting to each tab
+        for tab_key, tab_name in Config.TAB_NAMES.items():
+            if tab_name in sheet_id_map:
+                sheet_id = sheet_id_map[tab_name]
+                
+                # Add filters and sorting for data tabs
+                if tab_key in ['game_lines', 'player_props', 'my_picks', 'results', 'futures']:
+                    requests.extend(self._get_data_tab_formatting(sheet_id, tab_key))
+                elif tab_key == 'overview':
+                    requests.extend(self._get_overview_formatting(sheet_id))
+        
+        # Apply all formatting in batch
+        if requests:
+            body = {'requests': requests}
+            self.sheets_service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body=body
+            ).execute()
+            
+            print(f"✅ Applied formatting to {len(Config.TAB_NAMES)} tabs")
+        
+    def _get_data_tab_formatting(self, sheet_id, tab_key):
+        """Get formatting requests for data tabs"""
+        requests = []
+        
+        # Determine number of columns based on tab type
+        column_counts = {
+            'game_lines': 35,      # Game lines has many snapshot columns
+            'player_props': 30,    # Player props has snapshot columns  
+            'my_picks': 17,        # My picks has standard columns
+            'results': 10,         # Results is simpler
+            'futures': 17          # Futures has comprehensive tracking
+        }
+        
+        max_cols = column_counts.get(tab_key, 26)
+        
+        # 1. Add autofilter for sorting/filtering
+        requests.append({
+            'setBasicFilter': {
+                'filter': {
+                    'range': {
+                        'sheetId': sheet_id,
+                        'startRowIndex': 0,
+                        'endRowIndex': 1000,  # Large range for data
+                        'startColumnIndex': 0,
+                        'endColumnIndex': max_cols
+                    }
+                }
+            }
+        })
+        
+        # 2. Header row formatting - Professional blue header
+        requests.append({
+            'repeatCell': {
+                'range': {
+                    'sheetId': sheet_id,
+                    'startRowIndex': 0,
+                    'endRowIndex': 1,
+                    'startColumnIndex': 0,
+                    'endColumnIndex': max_cols
+                },
+                'cell': {
+                    'userEnteredFormat': {
+                        'backgroundColor': {'red': 0.2, 'green': 0.4, 'blue': 0.8},
+                        'textFormat': {
+                            'foregroundColor': {'red': 1.0, 'green': 1.0, 'blue': 1.0},
+                            'fontSize': 11,
+                            'bold': True
+                        },
+                        'horizontalAlignment': 'CENTER',
+                        'borders': {
+                            'bottom': {'style': 'SOLID', 'width': 2, 'color': {'red': 0.1, 'green': 0.2, 'blue': 0.6}}
+                        }
+                    }
+                },
+                'fields': 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,borders)'
+            }
+        })
+        
+        # 3. Freeze header row
+        requests.append({
+            'updateSheetProperties': {
+                'properties': {
+                    'sheetId': sheet_id,
+                    'gridProperties': {
+                        'frozenRowCount': 1
+                    }
+                },
+                'fields': 'gridProperties.frozenRowCount'
+            }
+        })
+        
+        # 4. Alternate row colors for data
+        requests.append({
+            'addBanding': {
+                'bandedRange': {
+                    'range': {
+                        'sheetId': sheet_id,
+                        'startRowIndex': 1,  # Skip header
+                        'endRowIndex': 1000,
+                        'startColumnIndex': 0,
+                        'endColumnIndex': max_cols
+                    },
+                    'rowProperties': {
+                        'headerColor': {'red': 0.2, 'green': 0.4, 'blue': 0.8},
+                        'firstBandColor': {'red': 0.95, 'green': 0.95, 'blue': 0.95},
+                        'secondBandColor': {'red': 1.0, 'green': 1.0, 'blue': 1.0}
+                    }
+                }
+            }
+        })
+        
+        # 5. Column-specific formatting based on tab type
+        if tab_key == 'my_picks' or tab_key == 'futures':
+            # Color confidence levels (assuming confidence is in column I for my_picks, column I for futures)
+            confidence_col = 8  # Column I (0-indexed)
+            requests.extend(self._get_confidence_color_formatting(sheet_id, confidence_col))
+            
+        if tab_key == 'futures':
+            # Color status column (column M)
+            status_col = 12  # Column M (0-indexed) 
+            requests.extend(self._get_status_color_formatting(sheet_id, status_col))
+        
+        return requests
+    
+    def _get_overview_formatting(self, sheet_id):
+        """Get formatting requests for overview tab"""
+        requests = []
+        
+        # Main title formatting
+        requests.append({
+            'repeatCell': {
+                'range': {
+                    'sheetId': sheet_id,
+                    'startRowIndex': 0,
+                    'endRowIndex': 1,
+                    'startColumnIndex': 0,
+                    'endColumnIndex': 6
+                },
+                'cell': {
+                    'userEnteredFormat': {
+                        'backgroundColor': {'red': 0.1, 'green': 0.3, 'blue': 0.7},
+                        'textFormat': {
+                            'foregroundColor': {'red': 1.0, 'green': 1.0, 'blue': 1.0},
+                            'fontSize': 16,
+                            'bold': True
+                        },
+                        'horizontalAlignment': 'CENTER'
+                    }
+                },
+                'fields': 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)'
+            }
+        })
+        
+        # Section headers formatting (rows 4, 10, 16)
+        section_rows = [3, 9, 15]  # 0-indexed
+        for row in section_rows:
+            requests.append({
+                'repeatCell': {
+                    'range': {
+                        'sheetId': sheet_id,
+                        'startRowIndex': row,
+                        'endRowIndex': row + 1,
+                        'startColumnIndex': 0,
+                        'endColumnIndex': 6
+                    },
+                    'cell': {
+                        'userEnteredFormat': {
+                            'backgroundColor': {'red': 0.8, 'green': 0.9, 'blue': 1.0},
+                            'textFormat': {
+                                'fontSize': 12,
+                                'bold': True,
+                                'foregroundColor': {'red': 0.1, 'green': 0.2, 'blue': 0.6}
+                            }
+                        }
+                    },
+                    'fields': 'userEnteredFormat(backgroundColor,textFormat)'
+                }
+            })
+        
+        return requests
+    
+    def _get_confidence_color_formatting(self, sheet_id, column_index):
+        """Add conditional formatting for confidence levels"""
+        return [{
+            'addConditionalFormatRule': {
+                'rule': {
+                    'ranges': [{
+                        'sheetId': sheet_id,
+                        'startRowIndex': 1,
+                        'endRowIndex': 1000,
+                        'startColumnIndex': column_index,
+                        'endColumnIndex': column_index + 1
+                    }],
+                    'gradientRule': {
+                        'minpoint': {
+                            'color': {'red': 1.0, 'green': 0.8, 'blue': 0.8},
+                            'type': 'NUMBER',
+                            'value': '1'
+                        },
+                        'maxpoint': {
+                            'color': {'red': 0.8, 'green': 1.0, 'blue': 0.8},
+                            'type': 'NUMBER', 
+                            'value': '10'
+                        }
+                    }
+                },
+                'index': 0
+            }
+        }]
+    
+    def _get_status_color_formatting(self, sheet_id, column_index):
+        """Add conditional formatting for status column"""
+        requests = []
+        
+        # Green for "Won"
+        requests.append({
+            'addConditionalFormatRule': {
+                'rule': {
+                    'ranges': [{
+                        'sheetId': sheet_id,
+                        'startRowIndex': 1,
+                        'endRowIndex': 1000,
+                        'startColumnIndex': column_index,
+                        'endColumnIndex': column_index + 1
+                    }],
+                    'booleanRule': {
+                        'condition': {
+                            'type': 'TEXT_CONTAINS',
+                            'values': [{'userEnteredValue': 'Won'}]
+                        },
+                        'format': {
+                            'backgroundColor': {'red': 0.8, 'green': 1.0, 'blue': 0.8}
+                        }
+                    }
+                },
+                'index': 0
+            }
+        })
+        
+        # Red for "Lost" 
+        requests.append({
+            'addConditionalFormatRule': {
+                'rule': {
+                    'ranges': [{
+                        'sheetId': sheet_id,
+                        'startRowIndex': 1,
+                        'endRowIndex': 1000,
+                        'startColumnIndex': column_index,
+                        'endColumnIndex': column_index + 1
+                    }],
+                    'booleanRule': {
+                        'condition': {
+                            'type': 'TEXT_CONTAINS',
+                            'values': [{'userEnteredValue': 'Lost'}]
+                        },
+                        'format': {
+                            'backgroundColor': {'red': 1.0, 'green': 0.8, 'blue': 0.8}
+                        }
+                    }
+                },
+                'index': 1
+            }
+        })
+        
+        return requests
     
     def _write_to_sheet(self, spreadsheet_id, sheet_name, range_start, values):
         """Write values to a specific sheet and range"""

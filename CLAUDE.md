@@ -104,3 +104,4 @@ Result, Profit_Loss, Date_Placed, Date_Resolved
 ## the-odds-api documentation
 - Code Samples: https://the-odds-api.com/liveapi/guides/v4/samples.html
 - Main page of documentation: https://the-odds-api.com/liveapi/guides/v4/#overview
+- Market parameter options: https://the-odds-api.com/sports-odds-data/betting-markets.html

@@ -256,6 +256,9 @@ class WeeklyWorkflow:
                 body={}
             ).execute()
             
+            # NOTE: We intentionally KEEP the Season_Futures sample data as reference
+            # Futures are season-long bets that may be manually copied/updated each week
+            
             print(f"   ✅ Removed dummy data - template is clean")
             
         except Exception as e:
@@ -351,8 +354,11 @@ def main():
     print(f"🧪 Testing complete weekly workflow...")
     print("📅 Using automatic snapshot detection based on current date/time")
     
-    # Execute workflow for Week 1, auto-detect snapshot
-    results = workflow.execute_weekly_collection(week_number=1)
+    # Execute workflow for current week, auto-detect snapshot
+    current_week = Config.get_current_week()
+    print(f"🏈 Executing workflow for Week {current_week} (auto-detected)")
+    
+    results = workflow.execute_weekly_collection(week_number=current_week)
     
     if results['success']:
         print(f"\n✅ Complete workflow test successful!")
@@ -364,7 +370,7 @@ def main():
         print(f"   • {results['api_requests_used']} API requests used")
         
         # Show weekly file URL
-        weekly_url = workflow.get_weekly_file_url(1)
+        weekly_url = workflow.get_weekly_file_url(current_week)
         if weekly_url:
             print(f"\n🔗 Weekly File: {weekly_url}")
         
@@ -382,7 +388,7 @@ def main():
                 print(f"📋 Existing snapshots: {', '.join(map(str, results['existing_snapshots']))}")
             
             # Show weekly file URL
-            weekly_url = workflow.get_weekly_file_url(1)
+            weekly_url = workflow.get_weekly_file_url(current_week)
             if weekly_url:
                 print(f"🔗 Weekly File: {weekly_url}")
                 

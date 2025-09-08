@@ -60,7 +60,7 @@ class NFLDataCollector:
         
         # Collect game lines data
         print("\n📊 Collecting game lines...")
-        games_data = self.api_client.get_nfl_games()
+        games_data = self.api_client.get_nfl_games(week_number)
         
         if not games_data:
             return {

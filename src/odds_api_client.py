@@ -40,8 +40,8 @@ class OddsAPIClient:
         print(f"📊 Markets: {self.markets}")
         print(f"🌎 Regions: {self.regions}")
     
-    def get_nfl_games(self) -> Optional[List[Dict]]:
-        """Get current NFL games and odds"""
+    def get_nfl_games(self, week_number: Optional[int] = None) -> Optional[List[Dict]]:
+        """Get current NFL games and odds, optionally filtered by week"""
         endpoint = f"{self.base_url}/sports/americanfootball_nfl/odds"
         
         params = {
@@ -51,6 +51,16 @@ class OddsAPIClient:
             'oddsFormat': 'american',
             'dateFormat': 'iso'
         }
+        
+        # Add date filtering for specific week
+        if week_number:            
+            # Use centralized week configuration
+            week_start, week_end = Config.get_week_date_range(week_number)
+            
+            params['commenceTimeFrom'] = week_start.strftime('%Y-%m-%dT%H:%M:%SZ')
+            params['commenceTimeTo'] = week_end.strftime('%Y-%m-%dT%H:%M:%SZ')
+            
+            print(f"📅 Filtering games for Week {week_number}: {week_start.strftime('%m/%d')} - {week_end.strftime('%m/%d')}")
         
         try:
             response = self._make_request(endpoint, params)
@@ -202,10 +212,20 @@ class OddsAPIClient:
                         
                         # Determine line type
                         line_type = 'Unknown'
-                        if 'Over' in outcome.get('name', ''):
+                        outcome_name = outcome.get('name', '')
+                        
+                        if 'Over' in outcome_name:
                             line_type = 'Over'
-                        elif 'Under' in outcome.get('name', ''):
+                        elif 'Under' in outcome_name:
                             line_type = 'Under'
+                        elif market_type == 'player_anytime_td':
+                            # Anytime TD is a Yes/No market - treat it as "Over" (Yes, player scores TD)
+                            line_type = 'Over'
+                        
+                        # For Anytime TD, there's no point spread - just "Yes" they score
+                        line_value = outcome.get('point')
+                        if market_type == 'player_anytime_td' and line_value is None:
+                            line_value = 1.0  # Represents "Yes" (1 or more TDs)
                         
                         prop = {
                             'game_id': game.get('id', ''),
@@ -216,7 +236,7 @@ class OddsAPIClient:
                             'market_type': self._market_display_name(market_type),
                             'player_name': player_name,
                             'line_type': line_type,
-                            'line_value': outcome.get('point'),
+                            'line_value': line_value,
                             'odds': outcome.get('price'),
                             'collected_at': datetime.now(timezone.utc).isoformat()
                         }
