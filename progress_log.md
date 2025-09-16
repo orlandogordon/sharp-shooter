@@ -7,10 +7,11 @@ Building a comprehensive NFL betting data tracking system that starts with Googl
 
 ### Tab Structure (Database-Optimized)
 ```
-Week_X_NFL_Betting_2024.xlsx
+Week_X_NFL_Betting_2025.xlsx
 ├── Overview (Dashboard/Summary)
 ├── Game_Lines (All games consolidated)
 ├── Player_Props (All props consolidated)
+├── Anytime_TD_Props (Separate anytime touchdown props)
 ├── My_Picks (Pick tracking)
 └── Results (Outcome tracking)
 ```
@@ -34,16 +35,18 @@ Week_X_NFL_Betting_2024.xlsx
 
 ### 2. Google Sheets Template Creation
 - [ ] Design Overview tab layout (weekly summary dashboard)
-- [ ] Create Game_Lines tab schema with 4-snapshot columns
+- [ ] Create Game_Lines tab schema with event-based snapshots
   - [ ] Game identification fields (Game_ID, Date, Home_Team, Away_Team)
-  - [ ] Spread tracking (4 snapshots with timestamps)
-  - [ ] Total tracking (4 snapshots with timestamps) 
-  - [ ] Moneyline tracking (4 snapshots with timestamps)
+  - [ ] Opening lines (Tuesday collection)
+  - [ ] Final pre-game lines (day of event collection)
   - [ ] Bookmaker field
 - [ ] Create Player_Props tab schema
   - [ ] Core fields (Game_ID, Player_Name, Market_Type, Data_Source)
-  - [ ] Over/Under lines and odds (4 snapshots with timestamps)
+  - [ ] Over/Under lines and odds (final snapshot only)
   - [ ] Reference data placeholders (Season_Over_Rate, Vs_Defense_Rate, Recent_Form_3G)
+- [ ] Create Anytime_TD_Props tab schema (separate from regular props)
+  - [ ] Core fields (Game_ID, Player_Name, Bookmaker)
+  - [ ] Anytime TD odds (final snapshot only)
 - [ ] Create My_Picks tab schema
   - [ ] Pick identification (Pick_ID, Game_ID, Date_Placed)
   - [ ] Bet details (Bet_Type, Selection, Line_Value, Odds, Stake)
@@ -64,14 +67,17 @@ Week_X_NFL_Betting_2024.xlsx
 ### 4. Data Collection System
 - [ ] Create abstract data collector interface
 - [ ] Implement Odds API collector
-- [ ] Build 4-snapshot collection scheduler
-  - [ ] Tuesday: Opening lines (Snapshot 1)
-  - [ ] Thursday: Mid-week update (Snapshot 2)
-  - [ ] Saturday: Pre-game lines (Snapshot 3)
-  - [ ] Sunday AM: Final lines (Snapshot 4)
+- [ ] Build event-based collection scheduler
+  - [ ] Tuesday: Opening lines for all games (game lines only)
+  - [ ] Thursday: Thursday Night Football final lines + player props
+  - [ ] Friday: Friday games (if any) final lines + player props
+  - [ ] Saturday: Saturday games (if any) final lines + player props
+  - [ ] Sunday: Sunday games final lines + player props
+  - [ ] Monday: Monday Night Football final lines + player props
 - [ ] Create data validation functions
 - [ ] Implement timestamp tracking for each snapshot
 - [ ] Add data quality checks (missing values, format validation)
+- [ ] Implement raw JSON response storage in `raw_data/` directory
 
 ### 5. Google Sheets API Integration
 - [x] Set up Google Sheets API credentials
@@ -168,6 +174,20 @@ Week_X_NFL_Betting_2024.xlsx
 - [ ] Create backup and recovery procedures
 - [ ] Build maintenance schedule
 
+### 15. Historical Data Collection
+- [ ] Design historical odds collection script
+- [ ] Implement Odds API historical endpoint integration
+- [ ] Create backfill workflow for past seasons
+- [ ] Add historical data validation
+- [ ] Build historical data import to database
+
+### 16. Enhanced Data Storage
+- [ ] Create raw_data directory structure
+- [ ] Implement JSON response storage by snapshot
+- [ ] Add file organization by date/event
+- [ ] Create data retention policies
+- [ ] Build JSON data analysis tools
+
 ---
 
 ## Current Status: 🎉 SYSTEM FULLY OPERATIONAL - PRODUCTION READY!
@@ -205,6 +225,28 @@ Week_X_NFL_Betting_2024.xlsx
 - All structure designed for easy database migration by Week 8-10
 - Plugin architecture allows for easy addition of new data sources
 - Enhanced pick tracking provides rich metadata for analysis
+- Raw JSON responses stored for historical analysis and debugging
+- Event-based collection optimizes for actual game scheduling
+
+## 🆕 IMPLEMENTATION STATUS - JANUARY 2025 UPDATES
+
+### Completed Tasks ✅:
+1. **[x] Update collection schedule** - Implemented event-based snapshot timing (Tuesday opening + day-of-event final)
+2. **[x] Modify player props strategy** - Modified to only collect on day of event (snapshots 2-6)
+3. **[x] Create Anytime TD tab** - Separate tracking for touchdown props implemented
+4. **[x] Update template structure** - Simplified to 2 snapshots for game lines, single snapshot for props
+5. **[x] Updated all code** - Data collector, sheets writer, and workflow updated for new structure
+6. **[x] Built new template** - Created template_builder.py and generated new master template
+
+### Remaining Tasks 📋:
+1. **[ ] Implement JSON storage** - Store raw responses in `raw_data/` subdirectories
+2. **[ ] Build historical data script** - Use Odds API historical endpoint for backfilling
+
+### Technical Architecture Updates:
+- **Event-based scheduling**: Dynamic collection based on actual game dates
+- **Raw data preservation**: JSON responses stored for analysis and debugging
+- **Specialized prop tracking**: Anytime TD props in dedicated sheet
+- **Historical data capability**: Separate script for backfilling past seasons
 
 ## Key Credentials & Configuration
 - **OAuth Authentication**: Personal Google Drive integration (no storage limits)
@@ -227,17 +269,22 @@ python src/weekly_workflow.py
 ```
 
 **Schedule:**
-- **Tuesday 10 AM+**: Snapshot 1 (Opening Lines) 
-- **Thursday 10 AM+**: Snapshot 2 (Mid-week Update)
-- **Saturday 10 AM+**: Snapshot 3 (Pre-game Lines)  
-- **Sunday 8 AM-1 PM**: Snapshot 4 (Final Lines)
+- **Tuesday 10 AM+**: Opening lines for all games (game lines only)
+- **Day of Event (~2-3 hours before kickoff)**: Final pre-game lines + player props
+  - **Thursday**: Thursday Night Football
+  - **Friday**: Friday games (if any)
+  - **Saturday**: Saturday games (if any)
+  - **Sunday**: Sunday games
+  - **Monday**: Monday Night Football
 
 **Features:**
 - ✅ **Auto-detects** which snapshot to collect based on current date/time
 - ✅ **Skips duplicates** if snapshot already collected  
 - ✅ **Creates weekly files** automatically (`Week_X_NFL_Betting_2025`)
 - ✅ **Handles 272 NFL games** and 1000+ player props per collection
-- ✅ **Uses ~30 API requests** per snapshot (very efficient)
+- ✅ **Uses ~30 API requests** per collection run (very efficient)
+- ✅ **Player props collected only on game day** for optimal accuracy
+- ✅ **Separate anytime TD tracking** in dedicated tab
 - ✅ **Tracks line movements** across all major markets
 - ✅ **Ready for database migration** by midseason
 

@@ -124,8 +124,10 @@ class WeeklyWorkflow:
             'weekly_spreadsheet_id': weekly_spreadsheet_id,
             'games_collected': collection_result['games_collected'],
             'props_collected': collection_result['props_collected'],
+            'anytime_td_props_collected': collection_result.get('anytime_td_props_collected', 0),
             'games_written': write_result['games_written'],
             'props_written': write_result['props_written'],
+            'anytime_td_props_written': write_result.get('anytime_td_props_written', 0),
             'api_requests_used': collection_result['api_requests_made'],
             'collection_timestamp': collection_result['collection_timestamp']
         }
@@ -135,7 +137,8 @@ class WeeklyWorkflow:
         print(f"   Week: {results['week']}")
         print(f"   Snapshot: {results['snapshot']} - {results['snapshot_description']}")
         print(f"   Games: {results['games_collected']} collected → {results['games_written']} written")
-        print(f"   Props: {results['props_collected']} collected → {results['props_written']} written") 
+        print(f"   Props: {results['props_collected']} collected → {results['props_written']} written")
+        print(f"   TD Props: {results['anytime_td_props_collected']} collected → {results['anytime_td_props_written']} written") 
         print(f"   API requests used: {results['api_requests_used']}")
         print(f"🔗 Weekly file: https://docs.google.com/spreadsheets/d/{weekly_spreadsheet_id}")
         
@@ -199,8 +202,8 @@ class WeeklyWorkflow:
         try:
             sheets_service = self.oauth_client.get_sheets_service()
             
-            # Check Overview tab for snapshot status
-            range_name = "Overview!B11:B14"
+            # Check Overview tab for snapshot status (supports 6 snapshots)
+            range_name = "Overview!B10:B15"
             result = sheets_service.spreadsheets().values().get(
                 spreadsheetId=spreadsheet_id,
                 range=range_name
@@ -242,6 +245,13 @@ class WeeklyWorkflow:
                 body={}
             ).execute()
             
+            # Clear sample data from Anytime_TD_Props (row 2)
+            sheets_service.spreadsheets().values().clear(
+                spreadsheetId=spreadsheet_id,
+                range="Anytime_TD_Props!A2:K2",
+                body={}
+            ).execute()
+            
             # Clear sample data from My_Picks (row 2)
             sheets_service.spreadsheets().values().clear(
                 spreadsheetId=spreadsheet_id,
@@ -256,8 +266,12 @@ class WeeklyWorkflow:
                 body={}
             ).execute()
             
-            # NOTE: We intentionally KEEP the Season_Futures sample data as reference
-            # Futures are season-long bets that may be manually copied/updated each week
+            # Clear sample data from Season_Futures (row 2)
+            sheets_service.spreadsheets().values().clear(
+                spreadsheetId=spreadsheet_id,
+                range="Season_Futures!A2:Q2",
+                body={}
+            ).execute()
             
             print(f"   ✅ Removed dummy data - template is clean")
             

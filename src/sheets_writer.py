@@ -58,6 +58,7 @@ class NFLSheetsWriter:
             print(f"   Snapshot: {data['snapshot']} - {data['snapshot_description']}")
             print(f"   Games: {data['games_count']}")
             print(f"   Props: {data['props_count']}")
+            print(f"   TD Props: {data.get('anytime_td_props_count', 0)}")
             
             results = {
                 'success': True,
@@ -65,6 +66,7 @@ class NFLSheetsWriter:
                 'snapshot': data['snapshot'],
                 'games_written': 0,
                 'props_written': 0,
+                'anytime_td_props_written': 0,
                 'errors': []
             }
             
@@ -84,6 +86,14 @@ class NFLSheetsWriter:
                 if props_result['errors']:
                     results['errors'].extend(props_result['errors'])
             
+            # Write anytime TD props data
+            if data.get('anytime_td_props_data'):
+                print(f"🏆 Writing anytime TD props data...")
+                td_props_result = self._write_anytime_td_props(data['anytime_td_props_data'], data['snapshot'])
+                results['anytime_td_props_written'] = td_props_result['rows_written']
+                if td_props_result['errors']:
+                    results['errors'].extend(td_props_result['errors'])
+            
             # Update overview tab
             print(f"📋 Updating overview tab...")
             try:
@@ -95,6 +105,7 @@ class NFLSheetsWriter:
             print(f"\n✅ Write operation complete!")
             print(f"📊 Games written: {results['games_written']}")
             print(f"🎯 Props written: {results['props_written']}")
+            print(f"🏆 TD Props written: {results['anytime_td_props_written']}")
             
             if results['errors']:
                 print(f"⚠️  Errors encountered: {len(results['errors'])}")
@@ -141,15 +152,241 @@ class NFLSheetsWriter:
             # First, expand sheet if needed  
             self._ensure_sheet_size(sheet_name, len(props_data) + 100)  # Add buffer rows
             
-            if snapshot_num == 1:
-                # Snapshot 1: Create new rows
-                return self._write_props_snapshot_1(props_data, sheet_name)
-            else:
-                # Snapshots 2-4: Update existing rows with additional snapshot data
-                return self._update_props_snapshots(props_data, snapshot_num, sheet_name)
+            # Player props are now single snapshot (day of event only)
+            # Always write as new rows or update existing rows
+            return self._write_props_simplified(props_data, sheet_name)
             
         except HttpError as error:
             error_msg = f"Failed to write player props: {error}"
+            print(f"   ❌ {error_msg}")
+            return {
+                'rows_written': 0,
+                'errors': [error_msg]
+            }
+    
+    def _write_props_simplified(self, props_data: List[Dict], sheet_name: str) -> Dict:
+        """Write player props in simplified single snapshot format"""
+        try:
+            # Get existing data to check for updates
+            existing_data = self._get_existing_sheet_data(sheet_name)
+            
+            # Build a map of existing props by unique key (player_name + market_type + game_id + bookmaker)
+            prop_row_map = {}
+            if len(existing_data) > 1:  # Has data beyond headers
+                for row_idx, row_data in enumerate(existing_data[1:], start=2):  # Skip header, start from row 2
+                    if row_data and len(row_data) >= 6:  # Need at least game_id, player, position, team, market, bookmaker
+                        game_id = row_data[0] if len(row_data) > 0 else ''
+                        player_name = row_data[1] if len(row_data) > 1 else ''
+                        market_type = row_data[4] if len(row_data) > 4 else ''
+                        bookmaker = row_data[5] if len(row_data) > 5 else ''
+                        
+                        # Create unique key for matching
+                        prop_key = f"{game_id}|{player_name}|{market_type}|{bookmaker}"
+                        if prop_key:
+                            prop_row_map[prop_key] = row_idx
+            
+            # Separate props into existing (to update) and new (to add)
+            existing_props = []
+            new_props = []
+            
+            for prop in props_data:
+                game_id = prop.get('game_id', '')
+                player_name = prop.get('player_name', '')
+                market_type = prop.get('market_type', '')
+                bookmaker = prop.get('bookmaker', '')
+                prop_key = f"{game_id}|{player_name}|{market_type}|{bookmaker}"
+                
+                if prop_key and prop_key in prop_row_map:
+                    existing_props.append((prop, prop_key, prop_row_map[prop_key]))
+                elif prop_key:  # Valid prop key but not found in existing data
+                    new_props.append(prop)
+            
+            updates_made = 0
+            errors = []
+            
+            print(f"   📊 Processing: {len(existing_props)} updates, {len(new_props)} new props")
+            
+            # Part 1: Update existing props (columns 8-12: over_line, over_odds, under_line, under_odds, collected_date)
+            for prop, prop_key, row_num in existing_props:
+                try:
+                    range_name = f"{sheet_name}!H{row_num}:L{row_num}"
+                    update_values = [
+                        prop.get('over_line', ''),
+                        prop.get('over_odds', ''),
+                        prop.get('under_line', ''),
+                        prop.get('under_odds', ''),
+                        prop.get('collected_date', '')
+                    ]
+                    
+                    body = {'values': [update_values]}
+                    
+                    self.sheets_service.spreadsheets().values().update(
+                        spreadsheetId=self.spreadsheet_id,
+                        range=range_name,
+                        valueInputOption='RAW',
+                        body=body
+                    ).execute()
+                    
+                    updates_made += 1
+                    
+                except Exception as e:
+                    errors.append(f"Failed to update prop {prop_key} row {row_num}: {e}")
+            
+            # Part 2: Add new props as complete rows
+            new_rows_added = 0
+            if new_props:
+                print(f"   ➕ Adding {len(new_props)} new props")
+                
+                # Convert new props to sheet rows
+                new_sheet_rows = []
+                for prop in new_props:
+                    row = self._prop_to_sheet_row(prop)
+                    new_sheet_rows.append(row)
+                
+                if new_sheet_rows:
+                    try:
+                        new_rows_added = self._batch_add_rows(sheet_name, new_sheet_rows, len(existing_data) + 1)
+                        print(f"   ✅ Added {new_rows_added} new prop rows")
+                        
+                        # Expand table formatting to include new rows
+                        if new_rows_added > 0:
+                            self._expand_table_formatting(sheet_name, new_rows_added, 'player_props')
+                        
+                    except Exception as e:
+                        errors.append(f"Failed to add new props: {e}")
+            
+            total_written = updates_made + new_rows_added
+            print(f"   ✅ Props: Updated {updates_made} existing + Added {new_rows_added} new = {total_written} total")
+            
+            return {
+                'rows_written': total_written,
+                'errors': errors
+            }
+            
+        except Exception as e:
+            error_msg = f"Failed to write simplified props: {e}"
+            print(f"   ❌ {error_msg}")
+            return {
+                'rows_written': 0,
+                'errors': [error_msg]
+            }
+    
+    def _write_anytime_td_props(self, td_props_data: List[Dict], snapshot_num: int) -> Dict:
+        """Write anytime TD props data to the Anytime_TD_Props sheet"""
+        sheet_name = Config.TAB_NAMES['anytime_td_props']
+        
+        try:
+            # First, expand sheet if needed  
+            self._ensure_sheet_size(sheet_name, len(td_props_data) + 100)  # Add buffer rows
+            
+            # Anytime TD props are always written as new/updated rows (no multiple snapshots)
+            return self._write_anytime_td_props_simple(td_props_data, sheet_name)
+            
+        except HttpError as error:
+            error_msg = f"Failed to write anytime TD props: {error}"
+            print(f"   ❌ {error_msg}")
+            return {
+                'rows_written': 0,
+                'errors': [error_msg]
+            }
+    
+    def _write_anytime_td_props_simple(self, td_props_data: List[Dict], sheet_name: str) -> Dict:
+        """Write anytime TD props (simplified format, no snapshots)"""
+        try:
+            # Get existing data to check for updates
+            existing_data = self._get_existing_sheet_data(sheet_name)
+            
+            # Build a map of existing TD props by unique key (player_name + game_id + bookmaker)
+            td_prop_row_map = {}
+            if len(existing_data) > 1:  # Has data beyond headers
+                for row_idx, row_data in enumerate(existing_data[1:], start=2):  # Skip header, start from row 2
+                    if row_data and len(row_data) >= 4:  # Need at least game_id, player, team, bookmaker
+                        game_id = row_data[0] if len(row_data) > 0 else ''
+                        player_name = row_data[1] if len(row_data) > 1 else ''
+                        bookmaker = row_data[3] if len(row_data) > 3 else ''
+                        
+                        # Create unique key for matching
+                        td_prop_key = f"{game_id}|{player_name}|{bookmaker}"
+                        if td_prop_key:
+                            td_prop_row_map[td_prop_key] = row_idx
+            
+            # Separate TD props into existing (to update) and new (to add)
+            existing_td_props = []
+            new_td_props = []
+            
+            for td_prop in td_props_data:
+                game_id = td_prop.get('game_id', '')
+                player_name = td_prop.get('player_name', '')
+                bookmaker = td_prop.get('bookmaker', '')
+                td_prop_key = f"{game_id}|{player_name}|{bookmaker}"
+                
+                if td_prop_key and td_prop_key in td_prop_row_map:
+                    existing_td_props.append((td_prop, td_prop_key, td_prop_row_map[td_prop_key]))
+                elif td_prop_key:  # Valid key but not found in existing data
+                    new_td_props.append(td_prop)
+            
+            updates_made = 0
+            errors = []
+            
+            print(f"   📊 Processing: {len(existing_td_props)} updates, {len(new_td_props)} new TD props")
+            
+            # Part 1: Update existing TD props
+            for td_prop, td_prop_key, row_num in existing_td_props:
+                try:
+                    # Update odds and collected date (columns 5 and 6)
+                    range_name = f"{sheet_name}!E{row_num}:F{row_num}"
+                    update_values = [
+                        td_prop.get('anytime_td_odds', ''),
+                        td_prop.get('collected_date', '')
+                    ]
+                    
+                    body = {'values': [update_values]}
+                    
+                    self.sheets_service.spreadsheets().values().update(
+                        spreadsheetId=self.spreadsheet_id,
+                        range=range_name,
+                        valueInputOption='RAW',
+                        body=body
+                    ).execute()
+                    
+                    updates_made += 1
+                    
+                except Exception as e:
+                    errors.append(f"Failed to update TD prop {td_prop_key} row {row_num}: {e}")
+            
+            # Part 2: Add new TD props as complete rows
+            new_rows_added = 0
+            if new_td_props:
+                print(f"   ➕ Adding {len(new_td_props)} new TD props")
+                
+                # Convert new TD props to sheet rows
+                new_sheet_rows = []
+                for td_prop in new_td_props:
+                    row = self._anytime_td_prop_to_sheet_row(td_prop)
+                    new_sheet_rows.append(row)
+                
+                if new_sheet_rows:
+                    try:
+                        new_rows_added = self._batch_add_rows(sheet_name, new_sheet_rows, len(existing_data) + 1)
+                        print(f"   ✅ Added {new_rows_added} new TD prop rows")
+                        
+                        # Expand table formatting to include new rows
+                        if new_rows_added > 0:
+                            self._expand_table_formatting(sheet_name, new_rows_added, 'anytime_td_props')
+                        
+                    except Exception as e:
+                        errors.append(f"Failed to add new TD props: {e}")
+            
+            total_written = updates_made + new_rows_added
+            print(f"   ✅ TD Props: Updated {updates_made} existing + Added {new_rows_added} new = {total_written} total")
+            
+            return {
+                'rows_written': total_written,
+                'errors': errors
+            }
+            
+        except Exception as e:
+            error_msg = f"Failed to write anytime TD props: {e}"
             print(f"   ❌ {error_msg}")
             return {
                 'rows_written': 0,
@@ -520,54 +757,57 @@ class NFLSheetsWriter:
         return result
     
     def _get_game_snapshot_columns(self, snapshot_num: int):
-        """Get column ranges for game snapshot updates"""
-        # Game lines structure from _game_to_sheet_row:
+        """Get column ranges for game snapshot updates (2-snapshot structure: opening/final)"""
+        # Game lines structure (2-snapshot):
         # Columns 1-5: game_id, date, home_team, away_team, bookmaker
-        # Columns 6-21: Spread snapshots (4 sets of 4 columns each)
-        # Columns 22-33: Total snapshots (4 sets of 3 columns each)  
-        # Columns 34-41: Moneyline snapshots (4 sets of 2 columns each)
+        # Columns 6-9: Opening spread (line, home_odds, away_odds, date)
+        # Columns 10-12: Opening total (line, over_odds, under_odds)
+        # Columns 13-14: Opening moneyline (home, away)
+        # Columns 15-18: Final spread (line, home_odds, away_odds, date)
+        # Columns 19-21: Final total (line, over_odds, under_odds)
+        # Columns 22-23: Final moneyline (home, away)
         
         ranges = []
         
-        # Spread snapshot columns (4 columns per snapshot)
-        spread_start = 6 + (snapshot_num - 1) * 4
-        spread_end = spread_start + 3
-        spread_range = f"{self._col_num_to_letter(spread_start)}:{self._col_num_to_letter(spread_end)}"
-        ranges.append((spread_range, 'spread'))
-        
-        # Total snapshot columns (3 columns per snapshot)
-        total_start = 22 + (snapshot_num - 1) * 3
-        total_end = total_start + 2
-        total_range = f"{self._col_num_to_letter(total_start)}:{self._col_num_to_letter(total_end)}"
-        ranges.append((total_range, 'total'))
-        
-        # Moneyline snapshot columns (2 columns per snapshot)
-        ml_start = 34 + (snapshot_num - 1) * 2
-        ml_end = ml_start + 1
-        ml_range = f"{self._col_num_to_letter(ml_start)}:{self._col_num_to_letter(ml_end)}"
-        ranges.append((ml_range, 'moneyline'))
+        if snapshot_num == 1:  # Opening lines
+            # Opening spread columns (6-9)
+            ranges.append(("F:I", 'spread'))  # F=6, G=7, H=8, I=9
+            # Opening total columns (10-12)
+            ranges.append(("J:L", 'total'))   # J=10, K=11, L=12
+            # Opening moneyline columns (13-14)
+            ranges.append(("M:N", 'moneyline'))  # M=13, N=14
+        else:  # Final lines (snapshot 2-6)
+            # Final spread columns (15-18)
+            ranges.append(("O:R", 'spread'))  # O=15, P=16, Q=17, R=18
+            # Final total columns (19-21)
+            ranges.append(("S:U", 'total'))   # S=19, T=20, U=21
+            # Final moneyline columns (22-23)
+            ranges.append(("V:W", 'moneyline'))  # V=22, W=23
         
         return ranges
     
     def _extract_game_snapshot_values(self, game: Dict, snapshot_num: int, range_type: str):
-        """Extract values for a specific game snapshot range"""
+        """Extract values for a specific game snapshot range (2-snapshot structure: opening/final)"""
+        # Map snapshot numbers to field prefixes
+        snapshot_prefix = 'opening' if snapshot_num == 1 else 'final'
+        
         if range_type == 'spread':
             return [
-                game.get(f'spread_line_{snapshot_num}', ''),
-                game.get(f'spread_odds_home_{snapshot_num}', ''),
-                game.get(f'spread_odds_away_{snapshot_num}', ''),
-                game.get(f'collected_date_{snapshot_num}', '')
+                game.get(f'{snapshot_prefix}_spread_line', ''),
+                game.get(f'{snapshot_prefix}_spread_home_odds', ''),
+                game.get(f'{snapshot_prefix}_spread_away_odds', ''),
+                game.get(f'{snapshot_prefix}_collected_date', '')
             ]
         elif range_type == 'total':
             return [
-                game.get(f'total_line_{snapshot_num}', ''),
-                game.get(f'total_over_odds_{snapshot_num}', ''),
-                game.get(f'total_under_odds_{snapshot_num}', '')
+                game.get(f'{snapshot_prefix}_total_line', ''),
+                game.get(f'{snapshot_prefix}_total_over_odds', ''),
+                game.get(f'{snapshot_prefix}_total_under_odds', '')
             ]
         elif range_type == 'moneyline':
             return [
-                game.get(f'ml_home_{snapshot_num}', ''),
-                game.get(f'ml_away_{snapshot_num}', '')
+                game.get(f'{snapshot_prefix}_ml_home', ''),
+                game.get(f'{snapshot_prefix}_ml_away', '')
             ]
         return []
     
@@ -752,34 +992,39 @@ class NFLSheetsWriter:
         return len(existing_games)
     
     def _game_to_sheet_row(self, game: Dict) -> List[Any]:
-        """Convert game data to sheet row format"""
-        # Order matches the Game_Lines sheet headers
+        """Convert game data to 2-snapshot sheet row format"""
+        # Order matches the simplified Game_Lines sheet headers (opening + final)
         return [
             game.get('game_id', ''),
             game.get('date', ''),
             game.get('home_team', ''),
             game.get('away_team', ''),
             game.get('bookmaker', ''),
-            # Spread snapshots (4 sets of 4 columns each)
-            game.get('spread_line_1', ''), game.get('spread_odds_home_1', ''), game.get('spread_odds_away_1', ''), game.get('collected_date_1', ''),
-            game.get('spread_line_2', ''), game.get('spread_odds_home_2', ''), game.get('spread_odds_away_2', ''), game.get('collected_date_2', ''),
-            game.get('spread_line_3', ''), game.get('spread_odds_home_3', ''), game.get('spread_odds_away_3', ''), game.get('collected_date_3', ''),
-            game.get('spread_line_4', ''), game.get('spread_odds_home_4', ''), game.get('spread_odds_away_4', ''), game.get('collected_date_4', ''),
-            # Total snapshots (4 sets of 3 columns each)
-            game.get('total_line_1', ''), game.get('total_over_odds_1', ''), game.get('total_under_odds_1', ''),
-            game.get('total_line_2', ''), game.get('total_over_odds_2', ''), game.get('total_under_odds_2', ''),
-            game.get('total_line_3', ''), game.get('total_over_odds_3', ''), game.get('total_under_odds_3', ''),
-            game.get('total_line_4', ''), game.get('total_over_odds_4', ''), game.get('total_under_odds_4', ''),
-            # Moneyline snapshots (4 sets of 2 columns each)
-            game.get('ml_home_1', ''), game.get('ml_away_1', ''),
-            game.get('ml_home_2', ''), game.get('ml_away_2', ''),
-            game.get('ml_home_3', ''), game.get('ml_away_3', ''),
-            game.get('ml_home_4', ''), game.get('ml_away_4', '')
+            # Opening snapshot (Tuesday)
+            game.get('opening_spread_line', ''), 
+            game.get('opening_spread_home_odds', ''), 
+            game.get('opening_spread_away_odds', ''), 
+            game.get('opening_collected_date', ''),
+            game.get('opening_total_line', ''), 
+            game.get('opening_total_over_odds', ''), 
+            game.get('opening_total_under_odds', ''),
+            game.get('opening_ml_home', ''), 
+            game.get('opening_ml_away', ''),
+            # Final snapshot (Day of Event)
+            game.get('final_spread_line', ''), 
+            game.get('final_spread_home_odds', ''), 
+            game.get('final_spread_away_odds', ''), 
+            game.get('final_collected_date', ''),
+            game.get('final_total_line', ''), 
+            game.get('final_total_over_odds', ''), 
+            game.get('final_total_under_odds', ''),
+            game.get('final_ml_home', ''), 
+            game.get('final_ml_away', '')
         ]
     
     def _prop_to_sheet_row(self, prop: Dict) -> List[Any]:
-        """Convert prop data to sheet row format"""
-        # Order matches the Player_Props sheet headers
+        """Convert prop data to simplified single snapshot sheet row format"""
+        # Order matches the simplified Player_Props sheet headers
         return [
             prop.get('game_id', ''),
             prop.get('player_name', ''),
@@ -788,20 +1033,36 @@ class NFLSheetsWriter:
             prop.get('market_type', ''),
             prop.get('bookmaker', ''),
             prop.get('data_source', ''),
-            # Snapshot 1
-            prop.get('over_line_1', ''), prop.get('over_odds_1', ''), prop.get('under_line_1', ''), prop.get('under_odds_1', ''), prop.get('collected_date_1', ''),
-            # Snapshot 2
-            prop.get('over_line_2', ''), prop.get('over_odds_2', ''), prop.get('under_line_2', ''), prop.get('under_odds_2', ''), prop.get('collected_date_2', ''),
-            # Snapshot 3
-            prop.get('over_line_3', ''), prop.get('over_odds_3', ''), prop.get('under_line_3', ''), prop.get('under_odds_3', ''), prop.get('collected_date_3', ''),
-            # Snapshot 4
-            prop.get('over_line_4', ''), prop.get('over_odds_4', ''), prop.get('under_line_4', ''), prop.get('under_odds_4', ''), prop.get('collected_date_4', ''),
+            # Single snapshot (day of event)
+            prop.get('over_line', ''), 
+            prop.get('over_odds', ''), 
+            prop.get('under_line', ''), 
+            prop.get('under_odds', ''), 
+            prop.get('collected_date', ''),
             # Reference data placeholders
             prop.get('season_over_rate', 'N/A'),
             prop.get('season_attempts', 'N/A'),
             prop.get('vs_defense_rate', 'N/A'),
             prop.get('recent_form_3g', 'N/A'),
             prop.get('home_away_split', 'N/A')
+        ]
+    
+    def _anytime_td_prop_to_sheet_row(self, td_prop: Dict) -> List[Any]:
+        """Convert anytime TD prop data to sheet row format (simplified, no snapshots)"""
+        # Order matches the Anytime_TD_Props sheet headers
+        return [
+            td_prop.get('game_id', ''),
+            td_prop.get('player_name', ''),
+            td_prop.get('team', ''),
+            td_prop.get('bookmaker', ''),
+            td_prop.get('data_source', ''),
+            td_prop.get('anytime_td_odds', ''),
+            td_prop.get('collected_date', ''),
+            # Reference data placeholders
+            td_prop.get('season_tds', 'N/A'),
+            td_prop.get('red_zone_targets', 'N/A'),
+            td_prop.get('goal_line_carries', 'N/A'),
+            td_prop.get('recent_td_rate', 'N/A')
         ]
     
     def _get_existing_sheet_data(self, sheet_name: str) -> List[List[Any]]:
@@ -848,8 +1109,9 @@ class NFLSheetsWriter:
             
             # Determine column counts based on table type
             column_counts = {
-                'game_lines': 35,      
-                'player_props': 30,    
+                'game_lines': 24,        # Simplified to 2 snapshots (opening + final)
+                'player_props': 17,      # Simplified to single snapshot 
+                'anytime_td_props': 11,  # Simple TD tracking
                 'my_picks': 17,        
                 'results': 10,         
                 'futures': 17          
@@ -948,12 +1210,14 @@ class NFLSheetsWriter:
             snapshot_num = data['snapshot']
             status_text = f"Collected - {data['collection_timestamp']}"
             
-            # Row mapping for snapshot status (based on template structure)
+            # Row mapping for snapshot status (based on new template structure)
             status_rows = {
-                1: 11,  # Row 11: Snapshot 1 status
-                2: 12,  # Row 12: Snapshot 2 status  
-                3: 13,  # Row 13: Snapshot 3 status
-                4: 14   # Row 14: Snapshot 4 status
+                1: 10,  # Row 10: Snapshot 1 status (Tuesday Opening)
+                2: 11,  # Row 11: Snapshot 2 status (Thursday TNF)  
+                3: 12,  # Row 12: Snapshot 3 status (Friday Games)
+                4: 13,  # Row 13: Snapshot 4 status (Saturday Games)
+                5: 14,  # Row 14: Snapshot 5 status (Sunday Games)
+                6: 15   # Row 15: Snapshot 6 status (Monday MNF)
             }
             
             if snapshot_num in status_rows:

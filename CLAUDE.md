@@ -7,11 +7,11 @@
 
 ## File Structure
 ```
-Week_1_NFL_Betting_2024.xlsx
+Week_1_NFL_Betting_2025.xlsx
 ├── Overview (Dashboard)
-├── Game_1_Lines_Props
-├── Game_2_Lines_Props
-├── ...
+├── Game_Lines (All games consolidated)
+├── Player_Props (All props consolidated)
+├── Anytime_TD_Props (Separate anytime touchdown props)
 ├── My_Picks
 └── Results
 ```
@@ -57,10 +57,19 @@ Result, Profit_Loss, Date_Placed, Date_Resolved
 ```
 
 ## Data Collection Schedule
-- **Tuesday**: Opening lines (Snapshot 1)
-- **Thursday**: Mid-week update (Snapshot 2)  
-- **Saturday**: Pre-game lines (Snapshot 3)
-- **Sunday AM**: Final lines (Snapshot 4)
+### Event-Based Snapshot Collection
+- **Tuesday**: Opening lines for all games (Snapshot 1) - Game lines only
+- **Day of Event**: Final pre-game lines collected ~2-3 hours before kickoff
+  - **Thursday**: Thursday Night Football final lines + player props
+  - **Friday**: Friday games (if any) final lines + player props
+  - **Saturday**: Saturday games (if any) final lines + player props  
+  - **Sunday**: Sunday games final lines + player props
+  - **Monday**: Monday Night Football final lines + player props
+
+### Player Props Collection Strategy
+- Player props collected **ONLY** during final pre-game snapshot on day of event
+- Anytime TD props stored in separate tab from other player props
+- No mid-week player prop updates (game lines only)
 
 ## Database Migration Prep
 - **Tag normalization**: Parse comma-separated tags for relational structure
@@ -88,12 +97,20 @@ Result, Profit_Loss, Date_Placed, Date_Resolved
 3. Create analysis and reporting tools
 4. Migrate to production database workflow
 
+### Phase 4: Historical Data & Advanced Features
+1. Build historical odds collection script using Odds API historical endpoint
+2. Implement raw JSON response storage system in `raw_data/` directory
+3. Create anytime TD props separate tracking system
+4. Build event-based collection scheduler for optimal timing
+
 ## Technical Requirements
 - **Google Sheets API** for automated file creation
 - **The Odds API** for line collection (budget: ~200 calls/week)
 - **Python scripts** for data processing and export
 - **PostgreSQL** for eventual database migration
 - **Data validation** to ensure snapshot consistency
+- **Raw Data Storage**: JSON responses stored in `raw_data/` directory with subdirectories for each snapshot
+- **Historical Data Collection**: Separate script for backfilling historical odds using Odds API historical endpoint
 
 ## Success Metrics
 - Complete line movement history (4 snapshots per line)
